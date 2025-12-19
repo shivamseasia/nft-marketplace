@@ -2,12 +2,24 @@ use anchor_lang::prelude::*;
 
 #[error_code]
 pub enum MarketplaceError {
-    #[msg("Price must be greater than zero")]
+    #[msg("Invalid price")]
     InvalidPrice,
-
-    #[msg("You are not the seller")]
-    Unauthorized,
 
     #[msg("Invalid NFT")]
     InvalidNft,
+
+    #[msg("Invalid metadata")]
+    InvalidMetadata,
+
+    #[msg("Unauthorized")]
+    Unauthorized,
+
+    #[msg("Invalid creator")]
+    InvalidCreator,
+
+    #[msg("Royalty calculation error")]
+    RoyaltyCalculationError,
+
+    #[msg("Invalid platform fee")]
+    InvalidPlatformFee,
 }
