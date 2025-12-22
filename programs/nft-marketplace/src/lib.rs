@@ -23,6 +23,11 @@ pub mod nft_marketplace {
         platform_fee_bps: u16,
     ) -> Result<()> {
         require!(
+            !ctx.accounts.marketplace.paused,
+            MarketplaceError::MarketplacePaused
+        );
+
+        require!(
             platform_fee_bps <= 1000,
             MarketplaceError::InvalidPlatformFee
         );
@@ -37,14 +42,30 @@ pub mod nft_marketplace {
 
     // ---------------- LIST NFT ----------------
     pub fn list_nft(ctx: Context<ListNft>, price: u64) -> Result<()> {
+        require!(
+            !ctx.accounts.marketplace.paused,
+            MarketplaceError::MarketplacePaused
+        );
+
         require!(price > 0, MarketplaceError::InvalidPrice);
 
         let metadata = MplMetadata::try_from(&ctx.accounts.metadata.to_account_info())
             .map_err(|_| MarketplaceError::InvalidMetadata)?;
+        let collection = metadata
+            .collection
+            .ok_or(MarketplaceError::InvalidCollection)?;
+
+        let whitelist = &ctx.accounts.whitelisted_collection;
 
         require!(
             metadata.mint == ctx.accounts.nft_mint.key(),
             MarketplaceError::InvalidMetadata
+        );
+
+        require!(collection.verified, MarketplaceError::InvalidCollection);
+        require!(
+            whitelist.collection_mint == collection.key,
+            MarketplaceError::CollectionNotWhitelisted
         );
 
         let listing = &mut ctx.accounts.listing;
@@ -60,6 +81,11 @@ pub mod nft_marketplace {
 
     // ---------------- BUY NFT ----------------
     pub fn buy_nft(ctx: Context<BuyNft>) -> Result<()> {
+        require!(
+            !ctx.accounts.marketplace.paused,
+            MarketplaceError::MarketplacePaused
+        );
+
         let listing = &ctx.accounts.listing;
         let marketplace = &ctx.accounts.marketplace;
 
@@ -118,6 +144,10 @@ pub mod nft_marketplace {
 
     // ---------------- CANCEL ----------------
     pub fn cancel_listing(ctx: Context<CancelListing>) -> Result<()> {
+        require!(
+            !ctx.accounts.marketplace.paused,
+            MarketplaceError::MarketplacePaused
+        );
         let listing = &ctx.accounts.listing;
 
         require!(
@@ -139,6 +169,65 @@ pub mod nft_marketplace {
 
         Ok(())
     }
+
+    pub fn add_collection(ctx: Context<AddCollection>) -> Result<()> {
+        require!(
+            !ctx.accounts.marketplace.paused,
+            MarketplaceError::MarketplacePaused
+        );
+
+        let collection = &mut ctx.accounts.collection;
+        collection.collection_mint = ctx.accounts.collection_mint.key();
+        collection.bump = ctx.bumps.collection;
+
+        Ok(())
+    }
+
+    pub fn remove_collection(ctx: Context<RemoveCollection>) -> Result<()> {
+        require!(
+            !ctx.accounts.marketplace.paused,
+            MarketplaceError::MarketplacePaused
+        );
+        Ok(())
+    }
+
+    pub fn pause_marketplace(ctx: Context<AdminAction>) -> Result<()> {
+        let marketplace = &mut ctx.accounts.marketplace;
+
+        require!(
+            marketplace.authority == ctx.accounts.authority.key(),
+            MarketplaceError::UnauthorizedAdmin
+        );
+
+        marketplace.paused = true;
+        Ok(())
+    }
+
+    pub fn unpause_marketplace(ctx: Context<AdminAction>) -> Result<()> {
+        let marketplace = &mut ctx.accounts.marketplace;
+
+        require!(
+            marketplace.authority == ctx.accounts.authority.key(),
+            MarketplaceError::UnauthorizedAdmin
+        );
+
+        marketplace.paused = false;
+        Ok(())
+    }
+
+    pub fn update_platform_fee(ctx: Context<AdminAction>, new_fee_bps: u16) -> Result<()> {
+        require!(new_fee_bps <= 1000, MarketplaceError::InvalidPlatformFee);
+
+        let marketplace = &mut ctx.accounts.marketplace;
+
+        require!(
+            marketplace.authority == ctx.accounts.authority.key(),
+            MarketplaceError::UnauthorizedAdmin
+        );
+
+        marketplace.platform_fee_bps = new_fee_bps;
+        Ok(())
+    }
 }
 
 #[derive(Accounts)]
@@ -151,7 +240,7 @@ pub struct InitializeMarketplace<'info> {
         payer = admin,
         seeds = [MARKETPLACE_SEED],
         bump,
-        space = 8 + 32 + 2 + 1
+        space = 8 + 32 + 2 + 1 + 1
     )]
     pub marketplace: Account<'info, MarketplaceConfig>,
 
@@ -210,6 +299,20 @@ pub struct ListNft<'info> {
         bump,
     )]
     pub master_edition: UncheckedAccount<'info>,
+
+    #[account(
+        seeds = [COLLECTION_SEED, collection_mint.key().as_ref()],
+        bump
+    )]
+    pub whitelisted_collection: Account<'info, WhitelistedCollection>,
+
+    pub collection_mint: Account<'info, Mint>,
+
+    #[account(
+    seeds = [MARKETPLACE_SEED],
+    bump = marketplace.bump
+)]
+    pub marketplace: Account<'info, MarketplaceConfig>,
 
     #[account(
         init,
@@ -360,6 +463,12 @@ pub struct CancelListing<'info> {
     pub escrow_nft_account: Account<'info, TokenAccount>,
 
     #[account(
+    seeds = [MARKETPLACE_SEED],
+    bump = marketplace.bump
+)]
+    pub marketplace: Account<'info, MarketplaceConfig>,
+
+    #[account(
         mut,
         constraint = seller_nft_account.owner == seller.key()
     )]
@@ -390,6 +499,65 @@ impl<'info> CancelListing<'info> {
             },
         )
     }
+}
+
+#[derive(Accounts)]
+pub struct AddCollection<'info> {
+    #[account(mut)]
+    pub authority: Signer<'info>,
+
+    #[account(
+        seeds = [MARKETPLACE_SEED],
+        bump = marketplace.bump,
+        constraint = marketplace.authority == authority.key()
+    )]
+    pub marketplace: Account<'info, MarketplaceConfig>,
+
+    pub collection_mint: Account<'info, Mint>,
+
+    #[account(
+        init,
+        payer = authority,
+        seeds = [COLLECTION_SEED, collection_mint.key().as_ref()],
+        bump,
+        space = 8 + 32 + 1
+    )]
+    pub collection: Account<'info, WhitelistedCollection>,
+
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct RemoveCollection<'info> {
+    #[account(mut)]
+    pub authority: Signer<'info>,
+
+    #[account(
+        seeds = [MARKETPLACE_SEED],
+        bump = marketplace.bump,
+        constraint = marketplace.authority == authority.key()
+    )]
+    pub marketplace: Account<'info, MarketplaceConfig>,
+
+    #[account(
+        mut,
+        close = authority,
+        seeds = [COLLECTION_SEED, collection.collection_mint.as_ref()],
+        bump = collection.bump
+    )]
+    pub collection: Account<'info, WhitelistedCollection>,
+}
+
+#[derive(Accounts)]
+pub struct AdminAction<'info> {
+    pub authority: Signer<'info>,
+
+    #[account(
+        mut,
+        seeds = [MARKETPLACE_SEED],
+        bump = marketplace.bump
+    )]
+    pub marketplace: Account<'info, MarketplaceConfig>,
 }
 
 // ---------------- INTERNAL ROYALTY HELPER ----------------

@@ -22,4 +22,16 @@ pub enum MarketplaceError {
 
     #[msg("Invalid platform fee")]
     InvalidPlatformFee,
+
+    #[msg("NFT does not belong to a verified collection")]
+    InvalidCollection,
+
+    #[msg("Collection is not whitelisted")]
+    CollectionNotWhitelisted,
+
+    #[msg("Marketplace is paused")]
+    MarketplacePaused,
+
+    #[msg("Unauthorized admin")]
+    UnauthorizedAdmin,
 }

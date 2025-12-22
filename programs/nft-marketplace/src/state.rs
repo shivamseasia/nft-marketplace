@@ -12,5 +12,14 @@ pub struct Listing {
 pub struct MarketplaceConfig {
     pub authority: Pubkey,
     pub platform_fee_bps: u16,
+    pub paused: bool,
     pub bump: u8,
 }
+
+
+#[account]
+pub struct WhitelistedCollection {
+    pub collection_mint: Pubkey,
+    pub bump: u8,
+}
+

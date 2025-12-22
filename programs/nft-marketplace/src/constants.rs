@@ -12,3 +12,4 @@ pub const MARKETPLACE_SEED: &[u8] = b"marketplace";
 pub const TREASURY_SEED: &[u8] = b"treasury";
 
 pub const MAX_PLATFORM_FEE_BPS: u16 = 1_000; // 10%
+pub const COLLECTION_SEED: &[u8] = b"collection";
