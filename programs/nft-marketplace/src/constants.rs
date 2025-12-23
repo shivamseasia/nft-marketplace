@@ -13,3 +13,4 @@ pub const TREASURY_SEED: &[u8] = b"treasury";
 
 pub const MAX_PLATFORM_FEE_BPS: u16 = 1_000; // 10%
 pub const COLLECTION_SEED: &[u8] = b"collection";
+pub const USDC_MINT: Pubkey = pubkey!("Es9vMFrzaCERcE5WkR6EJ8pX6kK2PzYdP1n6bY3FJz5"); // mainnet

@@ -4,7 +4,8 @@ use anchor_lang::prelude::*;
 pub struct Listing {
     pub seller: Pubkey,
     pub nft_mint: Pubkey,
-    pub price: u64, // lamports
+    pub price: u64,
+    pub payment_mint: Pubkey,
     pub bump: u8,
 }
 

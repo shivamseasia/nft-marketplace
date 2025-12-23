@@ -41,7 +41,7 @@ pub mod nft_marketplace {
     }
 
     // ---------------- LIST NFT ----------------
-    pub fn list_nft(ctx: Context<ListNft>, price: u64) -> Result<()> {
+    pub fn list_nft(ctx: Context<ListNft>, price: u64, payment_mint: Pubkey) -> Result<()> {
         require!(
             !ctx.accounts.marketplace.paused,
             MarketplaceError::MarketplacePaused
@@ -68,10 +68,16 @@ pub mod nft_marketplace {
             MarketplaceError::CollectionNotWhitelisted
         );
 
+        require!(
+            payment_mint == Pubkey::default() || payment_mint == USDC_MINT,
+            MarketplaceError::InvalidPaymentMint
+        );
+
         let listing = &mut ctx.accounts.listing;
         listing.seller = ctx.accounts.seller.key();
         listing.nft_mint = ctx.accounts.nft_mint.key();
         listing.price = price;
+        listing.payment_mint = payment_mint;
         listing.bump = ctx.bumps.listing;
 
         token::transfer(ctx.accounts.into_transfer_to_escrow(), 1)?;
@@ -87,59 +93,11 @@ pub mod nft_marketplace {
         );
 
         let listing = &ctx.accounts.listing;
-        let marketplace = &ctx.accounts.marketplace;
-
-        let metadata = MplMetadata::try_from(&ctx.accounts.metadata.to_account_info())
-            .map_err(|_| MarketplaceError::InvalidMetadata)?;
-
-        // -------- PLATFORM FEE --------
-        let platform_fee = (listing.price as u128)
-            .checked_mul(marketplace.platform_fee_bps as u128)
-            .unwrap()
-            .checked_div(10_000)
-            .unwrap() as u64;
-
-        **ctx
-            .accounts
-            .buyer
-            .to_account_info()
-            .try_borrow_mut_lamports()? -= platform_fee;
-        **ctx
-            .accounts
-            .treasury
-            .to_account_info()
-            .try_borrow_mut_lamports()? += platform_fee;
-
-        let remaining_price = listing.price - platform_fee;
-
-        // -------- ROYALTIES --------
-        let seller_amount = distribute_royalties(
-            &metadata,
-            remaining_price,
-            &ctx.accounts.buyer.to_account_info(),
-            &ctx.remaining_accounts,
-        )?;
-
-        // -------- PAY SELLER --------
-        **ctx
-            .accounts
-            .buyer
-            .to_account_info()
-            .try_borrow_mut_lamports()? -= seller_amount;
-        **ctx
-            .accounts
-            .seller
-            .to_account_info()
-            .try_borrow_mut_lamports()? += seller_amount;
-
-        let seeds = &[LISTING_SEED, listing.nft_mint.as_ref(), &[listing.bump]];
-        let signer = &[&seeds[..]];
-
-        token::transfer(ctx.accounts.into_transfer_to_buyer().with_signer(signer), 1)?;
-
-        token::close_account(ctx.accounts.into_close_escrow().with_signer(signer))?;
-
-        Ok(())
+        if listing.payment_mint == Pubkey::default() {
+            process_sol_purchase(ctx)
+        } else {
+            process_usdc_purchase(ctx)
+        }
     }
 
     // ---------------- CANCEL ----------------
@@ -388,6 +346,25 @@ pub struct BuyNft<'info> {
     )]
     pub treasury: SystemAccount<'info>,
 
+    // ---------- USDC accounts ----------
+    #[account(
+        mut,
+        constraint = buyer_usdc.mint == USDC_MINT
+    )]
+    pub buyer_usdc: Option<Account<'info, TokenAccount>>,
+
+    #[account(
+        mut,
+        constraint = seller_usdc.mint == USDC_MINT
+    )]
+    pub seller_usdc: Option<Account<'info, TokenAccount>>,
+
+    #[account(
+        mut,
+        constraint = treasury_usdc.mint == USDC_MINT
+    )]
+    pub treasury_usdc: Option<Account<'info, TokenAccount>>,
+    // ----------------------------------
     #[account(
         mut,
         seeds = [LISTING_SEED, nft_mint.key().as_ref()],
@@ -435,6 +412,32 @@ impl<'info> BuyNft<'info> {
                 account: self.escrow_nft_account.to_account_info(),
                 destination: self.seller.to_account_info(),
                 authority: self.listing.to_account_info(),
+            },
+        )
+    }
+
+    fn into_transfer_to_treasury(
+        &self,
+    ) -> CpiContext<'_, '_, '_, 'info, Transfer<'info>> {
+        CpiContext::new(
+            self.token_program.to_account_info(),
+            Transfer {
+                from: self.buyer_usdc.as_ref().unwrap().to_account_info(),
+                to: self.treasury_usdc.as_ref().unwrap().to_account_info(),
+                authority: self.buyer.to_account_info(),
+            },
+        )
+    }
+
+    fn into_transfer_to_seller(
+        &self,
+    ) -> CpiContext<'_, '_, '_, 'info, Transfer<'info>> {
+        CpiContext::new(
+            self.token_program.to_account_info(),
+            Transfer {
+                from: self.buyer_usdc.as_ref().unwrap().to_account_info(),
+                to: self.seller_usdc.as_ref().unwrap().to_account_info(),
+                authority: self.buyer.to_account_info(),
             },
         )
     }
@@ -607,3 +610,129 @@ fn distribute_royalties(
 
     Ok(price - paid)
 }
+
+fn process_sol_purchase(ctx: Context<BuyNft>) -> Result<()> {
+    let listing = &ctx.accounts.listing;
+    let marketplace = &ctx.accounts.marketplace;
+
+    let metadata = MplMetadata::try_from(&ctx.accounts.metadata.to_account_info())
+        .map_err(|_| MarketplaceError::InvalidMetadata)?;
+
+    // -------- PLATFORM FEE --------
+    let platform_fee = (listing.price as u128)
+        .checked_mul(marketplace.platform_fee_bps as u128)
+        .unwrap()
+        .checked_div(10_000)
+        .unwrap() as u64;
+
+    **ctx
+        .accounts
+        .buyer
+        .to_account_info()
+        .try_borrow_mut_lamports()? -= platform_fee;
+    **ctx
+        .accounts
+        .treasury
+        .to_account_info()
+        .try_borrow_mut_lamports()? += platform_fee;
+
+    let remaining_price = listing.price - platform_fee;
+
+    // -------- ROYALTIES --------
+    let seller_amount = distribute_royalties(
+        &metadata,
+        remaining_price,
+        &ctx.accounts.buyer.to_account_info(),
+        &ctx.remaining_accounts,
+    )?;
+
+    // -------- PAY SELLER --------
+    **ctx
+        .accounts
+        .buyer
+        .to_account_info()
+        .try_borrow_mut_lamports()? -= seller_amount;
+    **ctx
+        .accounts
+        .seller
+        .to_account_info()
+        .try_borrow_mut_lamports()? += seller_amount;
+
+    let seeds = &[LISTING_SEED, listing.nft_mint.as_ref(), &[listing.bump]];
+    let signer = &[&seeds[..]];
+
+    token::transfer(ctx.accounts.into_transfer_to_buyer().with_signer(signer), 1)?;
+
+    token::close_account(ctx.accounts.into_close_escrow().with_signer(signer))?;
+
+    Ok(())
+}
+
+fn process_usdc_purchase(ctx: Context<BuyNft>) -> Result<()> {
+    let listing = &ctx.accounts.listing;
+    let marketplace = &ctx.accounts.marketplace;
+
+    let price = listing.price;
+    let platform_fee = price * marketplace.platform_fee_bps as u64 / 10_000;
+
+    // Transfer platform fee
+    token::transfer(ctx.accounts.into_transfer_to_treasury(), platform_fee)?;
+
+    // Distribute royalties (same logic as v3, token-based)
+    let seller_amount = distribute_royalties_token(
+        price - platform_fee,
+        &ctx.accounts.buyer_usdc.as_ref().unwrap().to_account_info(),
+        &ctx.remaining_accounts,
+        &ctx.accounts.token_program,
+    )?;
+
+    // Pay seller
+    token::transfer(ctx.accounts.into_transfer_to_seller(), seller_amount)?;
+
+    // Transfer NFT
+    token::transfer(ctx.accounts.into_transfer_to_buyer(), 1)?;
+
+    Ok(())
+}
+
+fn distribute_royalties_token(
+    amount: u64,
+    payer: &AccountInfo,
+    remaining_accounts: &[AccountInfo],
+    token_program: &Program<Token>,
+) -> Result<u64> {
+    if remaining_accounts.is_empty() {
+        return Ok(amount);
+    }
+
+    let mut total_royalty: u64 = 0;
+
+    for chunk in remaining_accounts.chunks(2) {
+        let creator_token_account = &chunk[0];
+        let creator_share_account = &chunk[1];
+
+        let share = creator_share_account
+            .try_borrow_data()?
+            .get(0)
+            .copied()
+            .unwrap_or(0) as u64;
+
+        let royalty_amount = amount * share / 100;
+        total_royalty += royalty_amount;
+
+        token::transfer(
+            CpiContext::new(
+                token_program.to_account_info(),
+                Transfer {
+                    from: payer.clone(),
+                    to: creator_token_account.clone(),
+                    authority: payer.clone(),
+                },
+            ),
+            royalty_amount,
+        )?;
+    }
+
+    Ok(amount - total_royalty)
+}
+

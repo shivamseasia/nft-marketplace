@@ -34,4 +34,7 @@ pub enum MarketplaceError {
 
     #[msg("Unauthorized admin")]
     UnauthorizedAdmin,
+    
+    #[msg("Invalid payment mint")]
+    InvalidPaymentMint,
 }
